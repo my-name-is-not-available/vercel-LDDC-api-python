@@ -6,14 +6,11 @@ import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import enum
-from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import replace, asdict
 from typing import Optional
 from functools import reduce
 
-from fastapi import FastAPI, Query
-from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, PlainTextResponse
+from flask import Flask, jsonify, request, Response
 
 # 将项目根目录添加到 sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
@@ -57,29 +54,11 @@ SOURCE_MAP = {
     Source.QM: "QQ音乐",
 }
 
-# 全局线程池
-executor = ThreadPoolExecutor(max_workers=10)
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Lifespan anager for the application.
-    # Code before the yield runs on startup.
-    yield
-    # Code after the yield runs on shutdown.
-    executor.shutdown(wait=True)
-    logging.info("线程池已成功关闭。")
-
-# 初始化 FastAPI 应用
-app = FastAPI(
-    title="LDDC Lyrics API",
-    description="一个用于获取歌词的API服务，基于LDDC项目。",
-    version=__version__,
-    lifespan=lifespan,
-)
+# 初始化 Flask 应用
+app = Flask(__name__)
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
 
 def search_lyrics_api(keyword: str):
     """
@@ -117,132 +96,153 @@ def search_lyrics_api(keyword: str):
 
     return final_results
 
+def make_serializable(obj):
+    """递归地将包含枚举等特殊类型的对象转换为可JSON序列化的字典。"""
+    if isinstance(obj, dict):
+        return {k: make_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, frozenset)):
+        return [make_serializable(i) for i in obj]
+    if isinstance(obj, enum.Enum):
+        return obj.value
+    return obj
 
-@app.get("/")
+def stringify(value):
+    """健壮地将值转换为字符串，如果是列表则用 ' / ' 连接"""
+    if isinstance(value, list):
+        return " / ".join(map(str, value))
+    return str(value) if value is not None else ""
+
+@app.route("/")
 def read_root():
-    return {"message": "欢迎使用 LDDC Lyrics API", "docs": "/docs"}
+    return jsonify({"message": f"欢迎使用 LDDC Lyrics API (Flask Version {__version__})"})
 
-@app.get("/api/search")
-async def search_lyrics_endpoint(keyword: str):
-    loop = asyncio.get_event_loop()
-    results_list = await loop.run_in_executor(executor, search_lyrics_api, keyword)
+@app.route("/api/search", methods=['GET'])
+def search_lyrics_endpoint():
+    keyword = request.args.get('keyword')
+    if not keyword:
+        return jsonify({"error": "keyword is required"}), 400
+        
+    results_list = search_lyrics_api(keyword)
     
     response_data = []
     for song_info in results_list:
-        serializable_info_dict = jsonable_encoder(song_info)
+        serializable_info_dict = make_serializable(asdict(song_info))
         song_info_json_str = json.dumps(serializable_info_dict)
 
-        def stringify(value):
-            if isinstance(value, list):
-                return " / ".join(map(str, value))
-            return str(value) if value is not None else ""
-
-        response_item = {
+        ordered_item = {
             "title": stringify(song_info.title),
             "artist": stringify(song_info.artist),
             "album": stringify(song_info.album),
             "duration": song_info.format_duration,
-            "source": SOURCE_MAP.get(song_info.source, str(song_info.source)),
             "song_info_json": song_info_json_str,
+            "source": SOURCE_MAP.get(song_info.source, str(song_info.source)),
         }
-        response_data.append(response_item)
+        response_data.append(ordered_item)
 
-    return JSONResponse(content=response_data)
+    # Manually dump JSON to preserve key order and handle encoding
+    json_string = json.dumps(response_data, ensure_ascii=False)
+    return Response(json_string, mimetype='application/json; charset=utf-8')
 
 
-@app.get("/api/match_lyrics", response_class=PlainTextResponse)
-async def match_lyrics_endpoint(
-    title: Optional[str] = Query(None, description="歌曲标题"),
-    artist: Optional[str] = Query(None, description="歌手名称"),
-    keyword: Optional[str] = Query(None, description="关键词（如文件名），用于匹配"),
-    album: Optional[str] = Query(None, description="专辑名称"),
-    duration: Optional[int] = Query(None, description="歌曲时长（毫秒）")
-):
+@app.route("/api/match_lyrics", methods=['GET'])
+def match_lyrics_endpoint():
     """
     根据歌曲信息自动匹配并返回最佳的LRC歌词。
     支持多种参数组合，并能处理歌名/歌手互换的情况。
     """
-    loop = asyncio.get_event_loop()
+    title = request.args.get('title')
+    artist = request.args.get('artist')
+    keyword = request.args.get('keyword')
+    album = request.args.get('album')
+    duration_str = request.args.get('duration')
+    duration = int(duration_str) if duration_str and duration_str.isdigit() else None
+
     song_info_to_try: list[SongInfo] = []
 
+    # 优先处理 title 和 artist
     if title and artist:
+        # 正常顺序
         song_info_to_try.append(
             SongInfo(source=Source.QM, title=title, artist=Artist(artist), album=album, duration=duration)
         )
+        # 交换顺序，以提高容错性
         song_info_to_try.append(
             SongInfo(source=Source.QM, title=artist, artist=Artist(title), album=album, duration=duration)
         )
+    # 其次处理 keyword
     elif keyword:
+        # 将 keyword 作为路径处理，auto_fetch 可以利用其 .stem
         from pathlib import Path
         song_info_to_try.append(
             SongInfo(source=Source.QM, path=Path(keyword), duration=duration)
         )
     else:
-        return PlainTextResponse(content="[00:00.00]必须提供 'title' 和 'artist' 或 'keyword' 参数", status_code=400, media_type="text/plain; charset=utf-8")
+        return Response("[00:00.00]必须提供 'title' 和 'artist' 或 'keyword' 参数", mimetype="text/plain; charset=utf-8", status=400)
 
     for info in song_info_to_try:
         try:
-            lyrics: Optional[Lyrics] = await loop.run_in_executor(executor, auto_fetch, info)
+            # 调用核心匹配函数
+            lyrics: Optional[Lyrics] = auto_fetch(info)
+            
             if lyrics and lyrics.get("orig"):
                 langs = ["orig"]
                 if lyrics.get("ts"):
                     langs.append("ts")
+                
                 lrc_text = lyrics.to(lyrics_format=LyricsFormat.VERBATIMLRC, langs=langs)
                 final_lrc = re.sub(r"\[tool:.*?\]\n\n", "", lrc_text, count=1)
-                return PlainTextResponse(content=final_lrc, media_type="text/plain; charset=utf-8")
+                return Response(final_lrc, mimetype="text/plain; charset=utf-8")
+
         except (LyricsNotFoundError, NotEnoughInfoError):
+            # 这是预期的失败，继续尝试下一个候选
             continue
         except Exception as e:
+            # 记录意外错误，但仍然继续尝试
             logging.error(f"为 '{info.artist_title()}' 匹配时发生未知错误", exc_info=True)
             continue
-            
-    return PlainTextResponse(content="[00:00.00]未找到匹配的歌词", status_code=404, media_type="text/plain; charset=utf-8")
+    
+    # 所有尝试都失败了
+    return Response("[00:00.00]未找到匹配的歌词", mimetype="text/plain; charset=utf-8", status=404)
 
 
-@app.get("/api/get_lyrics_by_id", response_class=PlainTextResponse)
-async def get_lyrics_by_id_api(song_info_json: str):
+@app.route("/api/get_lyrics_by_id", methods=['GET'])
+def get_lyrics_by_id_api():
     """
     根据歌曲ID和来源获取歌词，并以LRC格式返回。
     """
+    song_info_json = request.args.get('song_info_json')
+    if not song_info_json:
+        return Response("[00:00.00]缺少参数 song_info_json", mimetype="text/plain; charset=utf-8", status=400)
+
     try:
-        loop = asyncio.get_event_loop()
-
-        # 1. 将 JSON 字符串解析为字典, 并重建 SongInfo 对象
         song_info_dict = json.loads(song_info_json)
-        original_song_info = SongInfo.from_dict(song_info_dict)
+        original_song_info: SongInfo = SongInfo.from_dict(song_info_dict)
 
-        # 2. 关键修复：使用 replace() 创建一个新的实例，并强制设置 language=0 以获取翻译
         song_info_for_trans = replace(original_song_info, language=0)
 
-        # 3. 使用修改后的 song_info 调用 get_lyrics
-        lyrics: Optional[Lyrics] = await loop.run_in_executor(executor, get_lyrics, song_info_for_trans)
+        lyrics: Optional[Lyrics] = get_lyrics(song_info_for_trans)
 
         if not lyrics or not lyrics.get("orig"):
-            return PlainTextResponse(content="[00:00.00]没有找到歌词", media_type="text/plain; charset=utf-8")
+            return Response("[00:00.00]没有找到歌词", mimetype="text/plain; charset=utf-8")
 
-        # 4. 确定需要的语言，如果存在翻译则加入
         langs = ["orig"]
         if lyrics.get("ts"):
             langs.append("ts")
 
-        # 5. 直接调用Lyrics对象的to方法进行转换，使用逐字格式
         lrc_text = lyrics.to(
             lyrics_format=LyricsFormat.VERBATIMLRC,
             langs=langs
         )
         
-        # 6. 移除可选的 tool 标签行，让歌词更纯净
         final_lrc = re.sub(r"\[tool:.*?\]\n\n", "", lrc_text, count=1)
 
-        return PlainTextResponse(content=final_lrc, media_type="text/plain; charset=utf-8")
+        return Response(final_lrc, mimetype="text/plain; charset=utf-8")
 
     except Exception as e:
         logging.error(f"调用 get_lyrics 时发生错误", exc_info=True)
-        return PlainTextResponse(content=f"获取歌词时出错: {e}", status_code=500, media_type="text/plain; charset=utf-8")
+        return Response(f"获取歌词时出错: {e}", mimetype="text/plain; charset=utf-8", status=500)
 
 
 if __name__ == "__main__":
-    import uvicorn
-    print("API 服务器正在启动...")
-    print("访问 http://127.0.0.1:8000/docs 查看 API 文档")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 建议在生产环境中使用 waitress 或 Gunicorn 等 WSGI 服务器
+    app.run(host="0.0.0.0", port=8000) 
