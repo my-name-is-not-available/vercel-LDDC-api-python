@@ -2,4 +2,3 @@ flask
 diskcache
 pyaes
 httpx[brotli,http2]
-PySide6
