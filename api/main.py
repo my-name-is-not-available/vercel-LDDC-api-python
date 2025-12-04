@@ -245,4 +245,4 @@ def get_lyrics_by_id_api():
 
 if __name__ == "__main__":
     # 建议在生产环境中使用 waitress 或 Gunicorn 等 WSGI 服务器
-    app.run(host="0.0.0.0", port=8000) 
+    app.run(host="0.0.0.0", port=5000) 
