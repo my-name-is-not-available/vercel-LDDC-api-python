@@ -6,3 +6,4 @@ charset-normalizer
 pyaes
 psutil
 pyobjc-framework-Cocoa; sys_platform == 'darwin'
+fastapi
