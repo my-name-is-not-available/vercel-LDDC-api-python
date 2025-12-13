@@ -4,10 +4,6 @@
 from enum import Enum
 from typing import Any, TypeVar
 
-try:
-    from PySide6.QtCore import QCoreApplication
-except ImportError:
-    QCoreApplication = None
 __all__ = ["Direction", "FileNameMode", "LyricsFormat", "LyricsType", "QrcType", "SaveMode", "SearchType", "SongListType"]
 
 
@@ -79,27 +75,28 @@ class Source(Enum):
     QM = 1
     KG = 2
     NE = 3
-    LRCLIB = 4
+    KW = 4
+    LRCLIB = 5
     Local = 100
 
     def __str__(self) -> str:
-        if not QCoreApplication:
-            return self.name
         match self:
             case Source.MULTI:
-                return QCoreApplication.translate("Source", "聚合")
+                return "聚合"
             case Source.QM:
-                return QCoreApplication.translate("Source", "QQ音乐")
+                return "QQ音乐"
             case Source.KG:
-                return QCoreApplication.translate("Source", "酷狗音乐")
+                return "酷狗音乐"
             case Source.NE:
-                return QCoreApplication.translate("Source", "网易云音乐")
+                return "网易云音乐"
+            case Source.KW:
+                return "酷我音乐"
             case Source.LRCLIB:
-                return QCoreApplication.translate("Source", "Lrclib")
+                return "Lrclib"
             case Source.Local:
-                return QCoreApplication.translate("Source", "本地")
+                return "本地"
             case _:
-                return str(self.name)
+                return self.name
 
     @property
     def supported_search_types(self) -> tuple[SearchType, ...]:
@@ -112,6 +109,8 @@ class Source(Enum):
                 return (SearchType.SONG, SearchType.ALBUM, SearchType.SONGLIST)
             case Source.NE:
                 return (SearchType.SONG, SearchType.ALBUM, SearchType.SONGLIST)
+            case Source.KW:
+                return (SearchType.SONG,)
             case Source.LRCLIB:
                 return (SearchType.SONG,)
             case _:

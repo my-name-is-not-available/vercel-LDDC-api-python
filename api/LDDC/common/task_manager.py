@@ -4,15 +4,17 @@ import contextlib
 from abc import abstractmethod
 from collections.abc import Callable, Iterable
 from functools import partial, reduce
-from threading import Lock, RLock
+from threading import Lock, RLock, Thread
 from typing import Any, Generic, final
 from weakref import WeakKeyDictionary
-
-from PySide6.QtCore import QObject, QRunnable, Qt, Signal, Slot
+from concurrent.futures import ThreadPoolExecutor
 
 from .logger import logger
 from .models import P, T
-from .thread import in_other_thread, is_exited, threadpool
+from .thread import in_other_thread, is_exited
+
+# 使用ThreadPoolExecutor替代QThreadPool
+threadpool = ThreadPoolExecutor(max_workers=8)
 
 
 class TaskManager:
@@ -122,9 +124,8 @@ class TaskManager:
         Args:
             task_type (str): 任务类型
             func (Callable[P, T]): 需要在子线程运行的函数
-            combined_callback (bool): 是否合并后回调
-            callback (Callable[[T], Any]): 函数运行结束后的回调函数(在原线程运行)
-            error_handling (Callable[[Exception], Any]): 错误处理函数(在原线程运行)
+            callback (Callable[[T], Any]): 函数运行结束后的回调函数
+            error_handling (Callable[[Exception], Any]): 错误处理函数
             *args: 传递给 func 的参数
             **kwargs: 传递给 func 的参数
 
@@ -151,13 +152,21 @@ class TaskManager:
                         logger.exception(f"调用错误处理函数时发生异常, 错误处理函数: {func.__name__}, 错误: {e}")
                 self.finished_task(task_type, task_id)
 
-        in_other_thread(func, _callback, _error_handling, *args, **kwargs)
+        # 使用线程池提交任务
+        def task_wrapper():
+            try:
+                result = func(*args, **kwargs)
+                _callback(result)
+            except Exception as e:
+                _error_handling(e)
+
+        threadpool.submit(task_wrapper)
 
     def run_worker(self, task_type: str, worker: "TaskWorker") -> None:
         worker.taskmanager = self
         worker.taskid = self.add_task(task_type)
         worker.task_type = task_type
-        threadpool.start(worker)
+        threadpool.submit(worker.run)
 
 
 def create_collecting_callbacks(
@@ -204,8 +213,19 @@ def create_collecting_callbacks(
     return result_collector, error_handler
 
 
-class TaskrSignals(QObject):
-    call_func = Signal(object)
+class TaskrSignals:
+    def __init__(self):
+        self.call_func_callbacks = []
+
+    def connect(self, callback):
+        self.call_func_callbacks.append(callback)
+
+    def emit(self, *args, **kwargs):
+        for callback in self.call_func_callbacks:
+            try:
+                callback(*args, **kwargs)
+            except Exception as e:
+                logger.exception(f"Signal emit error: {e}")
 
 
 class TaskSignalInstance(Generic[P]):
@@ -226,7 +246,7 @@ class TaskSignalInstance(Generic[P]):
         with self._lock:
             funcs = self.funcs.copy()
         for func in funcs:
-            self.worker.worker_signals.call_func.emit(partial(func, *args, **kwargs))
+            self.worker.worker_signals.emit(partial(func, *args, **kwargs))
 
 
 class TaskSignal(Generic[P]):
@@ -239,13 +259,12 @@ class TaskSignal(Generic[P]):
             return self._instances.setdefault(instance, TaskSignalInstance[P](instance))
 
 
-class TaskWorker(QRunnable):
+class TaskWorker:
     """任务基类"""
 
     def __init__(self) -> None:
-        super().__init__()
         self.worker_signals = TaskrSignals()
-        self.worker_signals.call_func.connect(self.__signal_slot, Qt.ConnectionType.QueuedConnection)
+        self.worker_signals.connect(self.__signal_slot)
         self.taskmanager: TaskManager  # 调用时赋值
         self.task_type: str  # 调用时赋值
         self.taskid: int  # 调用时赋值
@@ -257,7 +276,6 @@ class TaskWorker(QRunnable):
     def finished_task(self) -> None:
         self.taskmanager.finished_task(self.task_type, self.taskid)
 
-    @final
     def run(self) -> None:
         try:
             self.run_task()
@@ -272,9 +290,17 @@ class TaskWorker(QRunnable):
     @abstractmethod
     def run_task(self) -> None: ...
 
-    @Slot(partial)
     def __signal_slot(self, func: partial) -> None:
         try:
             func()
         except Exception:
             logger.exception(f"调用信号槽函数时发生异常, 信号槽函数: {func.func.__name__}")
+
+
+# 清理函数，确保线程池正确关闭
+def cleanup():
+    threadpool.shutdown(wait=True)
+
+# 注册退出处理
+import atexit
+atexit.register(cleanup)

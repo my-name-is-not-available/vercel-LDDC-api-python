@@ -179,15 +179,6 @@ def match_lyrics_endpoint():
     """
     根据歌曲信息自动匹配并返回最佳的LRC歌词。
     支持多种参数组合，并能处理歌名/歌手互换的情况。
-    
-    Query Parameters:
-        title (optional): 歌曲标题
-        artist (optional): 歌手名称
-        keyword (optional): 搜索关键词（当 title 和 artist 不可用时使用）
-        album (optional): 专辑名称
-        duration (optional): 歌曲时长（秒）
-        include_romaji (optional): 是否包含罗马音。接受 'true', '1', 'yes'（不区分大小写）。
-                                   默认为 false。罗马音仅在源数据包含时才会出现。
     """
     title = request.args.get('title')
     artist = request.args.get('artist')
@@ -195,7 +186,6 @@ def match_lyrics_endpoint():
     album = request.args.get('album')
     duration_str = request.args.get('duration')
     duration = int(duration_str) if duration_str and duration_str.isdigit() else None
-    include_romaji = request.args.get('include_romaji', '').lower() in ('true', '1', 'yes')
 
     song_info_to_try: list[SongInfo] = []
 
@@ -226,8 +216,6 @@ def match_lyrics_endpoint():
             
             if lyrics and lyrics.get("orig"):
                 langs = ["orig"]
-                if include_romaji and lyrics.get("roma"):
-                    langs.append("roma")
                 if lyrics.get("ts"):
                     langs.append("ts")
                 
@@ -251,17 +239,10 @@ def match_lyrics_endpoint():
 def get_lyrics_by_id_api():
     """
     根据歌曲ID和来源获取歌词，并以LRC格式返回。
-    
-    Query Parameters:
-        song_info_json (required): 歌曲信息的JSON字符串
-        include_romaji (optional): 是否包含罗马音。接受 'true', '1', 'yes'（不区分大小写）。
-                                   默认为 false。罗马音仅在源数据包含时才会出现。
     """
     song_info_json = request.args.get('song_info_json')
     if not song_info_json:
         return Response("[00:00.00]缺少参数 song_info_json", mimetype="text/plain; charset=utf-8", status=400)
-
-    include_romaji = request.args.get('include_romaji', '').lower() in ('true', '1', 'yes')
 
     try:
         song_info_dict = json.loads(song_info_json)
@@ -275,8 +256,6 @@ def get_lyrics_by_id_api():
             return Response("[00:00.00]没有找到歌词", mimetype="text/plain; charset=utf-8")
 
         langs = ["orig"]
-        if include_romaji and lyrics.get("roma"):
-            langs.append("roma")
         if lyrics.get("ts"):
             langs.append("ts")
 

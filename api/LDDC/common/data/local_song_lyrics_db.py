@@ -11,24 +11,44 @@ import json
 import sqlite3
 from pathlib import Path
 from threading import Lock
-
-from PySide6.QtCore import QObject, Signal
+from typing import Callable, List
 
 from LDDC.common.models import SongInfo, Source
 from LDDC.common.paths import data_dir
 
 
-class LocalSongLyricsDB(QObject):
+# 自定义信号类，替代PySide6的Signal
+class CustomSignal:
+    def __init__(self):
+        self._callbacks: List[Callable] = []
+
+    def connect(self, callback: Callable) -> None:
+        if callback not in self._callbacks:
+            self._callbacks.append(callback)
+
+    def disconnect(self, callback: Callable) -> None:
+        if callback in self._callbacks:
+            self._callbacks.remove(callback)
+
+    def emit(self, *args, **kwargs) -> None:
+        for callback in self._callbacks:
+            try:
+                callback(*args, **kwargs)
+            except Exception as e:
+                print(f"Error in signal callback: {e}")
+
+
+class LocalSongLyricsDB:
     """歌词关联数据库管理类
 
     1. 使用sqlite3数据库管理本地歌曲歌词
     2. 使用Lock进行保证线程安全
     """
 
-    changed = Signal()  # 用于更新歌词关联管理器UI
+    def __init__(self) -> None:
+        self.changed = CustomSignal()  # 用于更新歌词关联管理器UI
 
     def __init__(self) -> None:
-        super().__init__()
         self.lock = Lock()
         self.path = data_dir / "local_song_lyrics.db"
         self.conn = sqlite3.connect(self.path, check_same_thread=False)

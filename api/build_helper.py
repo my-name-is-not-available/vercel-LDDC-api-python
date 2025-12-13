@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 import argparse
 import time
+import os
 
 from LDDC.common.version import __version__, parse_version
 
@@ -23,9 +24,13 @@ match arg.task:
     case "get_year":
         print(year)
     case "get_qt_translations_path":
-        from PySide6.QtCore import QLibraryInfo
-
-        print(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))
+        # 移除对PySide6的依赖
+        # 尝试提供一个合理的默认路径
+        if os.name == "nt":  # Windows
+            default_path = os.path.join(os.environ.get("ProgramFiles", "C:\Program Files"), "Python", "Lib", "site-packages", "PySide6", "translations")
+        else:  # Linux/Mac
+            default_path = "/usr/share/qt6/translations"
+        print(default_path)
     case "log_dir":
         from LDDC.common.paths import log_dir
 

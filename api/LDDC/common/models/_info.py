@@ -7,7 +7,10 @@ from dataclasses import asdict, dataclass
 from itertools import zip_longest
 from pathlib import Path
 from types import MappingProxyType
-from typing import Self, TypeVar
+from typing import TypeVar
+
+# 为Python 3.10及以下版本定义Self类型
+Self = TypeVar('Self')
 
 from ._enums import Language, SearchType, SongListType, Source, get_enum
 

@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (C) 2024-2025 沉默の金 <cmzj@cmzj.org>
 # SPDX-License-Identifier: GPL-3.0-only
+import asyncio
 from collections.abc import Iterable
 from functools import reduce
 from typing import Literal, overload
-
-from PySide6.QtCore import QEventLoop, QTimer
+import time
 
 from LDDC.common.exceptions import AutoFetchUnknownError, LDDCError, LyricsNotFoundError, NotEnoughInfoError
 from LDDC.common.logger import logger
@@ -54,7 +54,6 @@ def auto_fetch(
     lyrics_results: dict[SongInfo, Lyrics] = {}  # 成功获取的歌词
     errors: list[Exception] = []  # 错误收集
 
-    loop = QEventLoop()
     taskmanger = TaskManager(
         parent_childs={
             "search": [],
@@ -62,9 +61,13 @@ def auto_fetch(
         },
     )
 
+    # 使用事件标志替代QEventLoop
+    is_finished = False
+
     def check_return() -> None:  # 检查是否所有任务都已完成
+        nonlocal is_finished
         if taskmanger.is_finished("search") and taskmanger.is_finished("get_lyrics"):
-            loop.exit()
+            is_finished = True
 
     taskmanger.set_callback("search", check_return)
     taskmanger.set_callback("get_lyrics", check_return)
@@ -156,22 +159,17 @@ def auto_fetch(
     _search(sources, keywords.get("artist-title") or keywords.get("title") or keywords["file_name"])
 
     time_out = False
-    timer = QTimer()
-    timer.start(30 * 1000)  # 30秒后停止超时
+    start_time = time.time()
+    timeout_seconds = 30  # 30秒超时
 
-    def timeout() -> None:
-        """超时回调,清理未完成的任务"""
-        nonlocal time_out
+    # 等待任务完成或超时
+    while not is_finished and time.time() - start_time < timeout_seconds:
+        time.sleep(0.1)  # 每100毫秒检查一次
+
+    if not is_finished:
         time_out = True
-        timer.stop()
         taskmanger.clear_task("search")
         taskmanger.clear_task("get_lyrics")
-        loop.quit()
-
-    timer.timeout.connect(timeout)
-
-    loop.exec()
-    timer.stop()
 
     if time_out:
         msg = "自动获取超时"

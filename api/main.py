@@ -52,6 +52,7 @@ SOURCE_MAP = {
     Source.KG: "酷狗音乐",
     Source.NE: "网易云音乐",
     Source.QM: "QQ音乐",
+    Source.KW: "酷我音乐",
 }
 
 # 初始化 Flask 应用
@@ -60,17 +61,42 @@ app = Flask(__name__)
 # 配置日志
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def search_lyrics_api(keyword: str):
+def search_lyrics_api(keyword: str, sources_param: Optional[str] = None):
     """
-    API 搜索功能的同步版本
+    API 搜索功能的同步版本，支持选择词源
+    
+    :param keyword: 搜索关键词
+    :param sources_param: 词源选择，格式为逗号分隔的字符串，如"qm,ne,kg"，为空则选择所有词源
     """
-    sources_to_search = [Source.QM, Source.NE, Source.KG]  # 定义了交错排序的优先级
-    results_by_source = {source: [] for source in sources_to_search}
+    # 默认所有词源
+    all_sources = [Source.QM, Source.NE, Source.KG, Source.KW]  # 定义了交错排序的优先级
+    
+    # 解析词源参数
+    selected_sources = all_sources
+    if sources_param:
+        # 源代码名称到枚举值的映射
+        source_map = {
+            "qm": Source.QM,
+            "ne": Source.NE,
+            "kg": Source.KG,
+            "kw": Source.KW,
+        }
+        
+        # 解析用户输入的词源列表
+        sources_list = [s.strip().lower() for s in sources_param.split(",")]
+        selected_sources = [source_map.get(s) for s in sources_list if s in source_map]
+        
+        # 如果选择无效，则默认使用所有词源
+        if not selected_sources:
+            selected_sources = all_sources
+    
+    # 只为选定的词源创建结果容器
+    results_by_source = {source: [] for source in all_sources if source in selected_sources}
 
-    with ThreadPoolExecutor(max_workers=len(sources_to_search)) as executor:
+    with ThreadPoolExecutor(max_workers=len(results_by_source)) as executor:
         future_to_source = {
             executor.submit(search, source, keyword, SearchType.SONG): source
-            for source in sources_to_search
+            for source in results_by_source.keys()
         }
 
         for future in as_completed(future_to_source):
@@ -89,9 +115,10 @@ def search_lyrics_api(keyword: str):
     if any(results_by_source.values()):
         max_len = max(len(v) for v in results_by_source.values())
 
+    # 保持交错排序逻辑，但只使用选定的词源
     for i in range(max_len):
-        for source in sources_to_search:
-            if i < len(results_by_source[source]):
+        for source in all_sources:  # 使用所有源的顺序，但跳过未选中的
+            if source in results_by_source and i < len(results_by_source[source]):
                 final_results.append(results_by_source[source][i])
 
     return final_results
@@ -121,8 +148,11 @@ def search_lyrics_endpoint():
     keyword = request.args.get('keyword')
     if not keyword:
         return jsonify({"error": "keyword is required"}), 400
+    
+    # 获取可选的词源参数
+    sources = request.args.get('sources')
         
-    results_list = search_lyrics_api(keyword)
+    results_list = search_lyrics_api(keyword, sources)
     
     response_data = []
     for song_info in results_list:
@@ -149,6 +179,15 @@ def match_lyrics_endpoint():
     """
     根据歌曲信息自动匹配并返回最佳的LRC歌词。
     支持多种参数组合，并能处理歌名/歌手互换的情况。
+    
+    Query Parameters:
+        title (optional): 歌曲标题
+        artist (optional): 歌手名称
+        keyword (optional): 搜索关键词（当 title 和 artist 不可用时使用）
+        album (optional): 专辑名称
+        duration (optional): 歌曲时长（秒）
+        include_romaji (optional): 是否包含罗马音。接受 'true', '1', 'yes'（不区分大小写）。
+                                   默认为 false。罗马音仅在源数据包含时才会出现。
     """
     title = request.args.get('title')
     artist = request.args.get('artist')
@@ -156,6 +195,7 @@ def match_lyrics_endpoint():
     album = request.args.get('album')
     duration_str = request.args.get('duration')
     duration = int(duration_str) if duration_str and duration_str.isdigit() else None
+    include_romaji = request.args.get('include_romaji', '').lower() in ('true', '1', 'yes')
 
     song_info_to_try: list[SongInfo] = []
 
@@ -186,6 +226,8 @@ def match_lyrics_endpoint():
             
             if lyrics and lyrics.get("orig"):
                 langs = ["orig"]
+                if include_romaji and lyrics.get("roma"):
+                    langs.append("roma")
                 if lyrics.get("ts"):
                     langs.append("ts")
                 
@@ -209,10 +251,17 @@ def match_lyrics_endpoint():
 def get_lyrics_by_id_api():
     """
     根据歌曲ID和来源获取歌词，并以LRC格式返回。
+    
+    Query Parameters:
+        song_info_json (required): 歌曲信息的JSON字符串
+        include_romaji (optional): 是否包含罗马音。接受 'true', '1', 'yes'（不区分大小写）。
+                                   默认为 false。罗马音仅在源数据包含时才会出现。
     """
     song_info_json = request.args.get('song_info_json')
     if not song_info_json:
         return Response("[00:00.00]缺少参数 song_info_json", mimetype="text/plain; charset=utf-8", status=400)
+
+    include_romaji = request.args.get('include_romaji', '').lower() in ('true', '1', 'yes')
 
     try:
         song_info_dict = json.loads(song_info_json)
@@ -226,6 +275,8 @@ def get_lyrics_by_id_api():
             return Response("[00:00.00]没有找到歌词", mimetype="text/plain; charset=utf-8")
 
         langs = ["orig"]
+        if include_romaji and lyrics.get("roma"):
+            langs.append("roma")
         if lyrics.get("ts"):
             langs.append("ts")
 
