@@ -1,4 +1,4 @@
-# vercel版-LLDC安卓版后端
+# vercel版-LDDC安卓版后端
 
 使用说明见 [API使用说明](./api/API使用说明.md)
 
